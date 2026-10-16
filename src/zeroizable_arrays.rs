@@ -1,20 +1,20 @@
 use crate::{MemSecurityErr, MemSecurityResult, ToBlake3Hash};
 use arrayvec::ArrayVec;
-use borsh::{BorshDeserialize, BorshSerialize};
 use bytes::{BufMut, BytesMut};
 use core::fmt;
 use core::ops::DerefMut;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[cfg(feature = "random")]
-use crate::CsprngArray;
+use random_detached::{Generator, RandomBytes};
 
 /// This a byte that is zeroed out when dropped from memory.
 /// #### Structure
 /// ```rust
 /// pub struct ZeroizeByte(u8);
 /// ```
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ZeroizeByte(u8);
 
 impl ZeroizeByte {
@@ -59,10 +59,8 @@ impl ZeroizeByte {
 
     /// Generate some random byte and initialize an new `ZeroizeByte` in the process.
     #[cfg(feature = "random")]
-    pub fn csprng() -> Self {
-        use crate::CsprngArraySimple;
-
-        ZeroizeByte(CsprngArraySimple::gen_u8_byte())
+    pub fn csprng() -> MemSecurityResult<Self> {
+        Ok(ZeroizeByte(RandomBytes::<1>::new()?.expose()[0]))
     }
 }
 
@@ -94,8 +92,56 @@ impl ZeroizeOnDrop for ZeroizeByte {}
 /// ```rust
 /// pub struct ZeroizeArray<const N: usize>([u8; N]);
 /// ```
-#[derive(BorshSerialize, BorshDeserialize)]
-pub struct ZeroizeArray<const N: usize>([u8; N]);
+#[cfg_attr(feature = "bitcode", derive(bitcode::Encode, bitcode::Decode))]
+#[cfg_attr(feature = "serde_derive", derive(serde::Serialize, serde::Deserialize))]
+pub struct ZeroizeArray<const N: usize>(
+    #[cfg_attr(feature = "serde_derive", serde(with = "bytes_array"))] [u8; N],
+);
+
+#[cfg(feature = "serde_derive")]
+mod bytes_array {
+    use core::fmt;
+    use serde::de::Visitor;
+    use serde::{de::Error, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer, const N: usize>(v: &[u8; N], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_bytes(v)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, const N: usize>(
+        d: D,
+    ) -> Result<[u8; N], D::Error> {
+        struct V<const N: usize>;
+
+        impl<'de, const N: usize> Visitor<'de> for V<N> {
+            type Value = [u8; N];
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "a byte array of length {}", N)
+            }
+
+            fn visit_bytes<E: Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                v.try_into().map_err(|_| E::invalid_length(v.len(), &self))
+            }
+
+            // Needed for formats (e.g. JSON) that represent bytes as a sequence
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = [0u8; N];
+                for (i, slot) in out.iter_mut().enumerate() {
+                    *slot = seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(i, &self))?;
+                }
+                Ok(out)
+            }
+        }
+
+        d.deserialize_bytes(V::<N>)
+    }
+}
 
 impl<const N: usize> AsRef<[u8]> for ZeroizeArray<N> {
     fn as_ref(&self) -> &[u8] {
@@ -108,7 +154,7 @@ impl<const N: usize> fmt::Debug for ZeroizeArray<N> {
         write!(
             f,
             "ZeroizeArray<const N: usize>({:?})",
-            &blake3::hash(&self.0)
+            blake3::hash(&self.0)
         )
     }
 }
@@ -250,7 +296,7 @@ impl<const N: usize> ZeroizeOnDrop for ZeroizeArray<N> {}
 ///
 /// pub struct ZeroizeBytesArray<const N: usize>(BytesMut);
 /// ```
-#[derive(BorshSerialize, BorshDeserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ZeroizeBytesArray<const N: usize>(BytesMut);
 
 impl<const N: usize> ZeroizeBytesArray<N> {
@@ -270,16 +316,16 @@ impl<const N: usize> ZeroizeBytesArray<N> {
 
     /// Initialize the array and set the internal value of the array to the value specified by method argument
     #[cfg(feature = "random")]
-    pub fn new_with_csprng() -> Self {
+    pub fn new_with_csprng() -> MemSecurityResult<Self> {
         let mut value_bytes = BytesMut::with_capacity(N);
 
-        let mut value = CsprngArray::<N>::gen();
+        let mut value = RandomBytes::<N>::new()?;
 
         value_bytes.put(&value.expose()[..]);
 
-        value.zeroize();
+        value.zeroize_mem();
 
-        ZeroizeBytesArray(value_bytes)
+        Ok(ZeroizeBytesArray(value_bytes))
     }
 
     /// Set the internal value of the array to the value specified by method argument
@@ -346,7 +392,7 @@ impl<const N: usize> fmt::Debug for ZeroizeBytesArray<N> {
         write!(
             f,
             "ZeroizeBytesArray<const N: usize>({:?})",
-            &blake3::hash(&self.0)
+            blake3::hash(&self.0)
         )
     }
 }
@@ -374,7 +420,7 @@ impl<const N: usize> ZeroizeOnDrop for ZeroizeBytesArray<N> {}
 ///
 /// pub struct ZeroizeBytes(BytesMut);
 /// ```
-#[derive(BorshSerialize, BorshDeserialize)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ZeroizeBytes(BytesMut);
 
 impl ZeroizeBytes {
@@ -453,7 +499,7 @@ impl Eq for ZeroizeBytes {}
 
 impl fmt::Debug for ZeroizeBytes {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ZeroizeBytes({:?})", &blake3::hash(&self.0))
+        write!(f, "ZeroizeBytes({:?})", blake3::hash(&self.0))
     }
 }
 

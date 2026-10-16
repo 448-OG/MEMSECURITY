@@ -23,39 +23,13 @@ This crate has not received an audit. Use at your own risk!!!
 1. ###### Generating random bytes
    Using the random byte generator (it is cryptographically secure based on the randomness provided by the OS you are using). The `random` feature must be enabled.
     ```rust
-    use memsecurity::CsprngArray;
+    use random_detached::{RandomBytes,Generator};
 
     // Generate a 32 byte array of random bytes
-    let random_bytes = CsprngArray::<32>::gen();
+    let random_bytes = RandomBytes::<32>::new().unwrap();
 
     // Assert that the random bytes are not zeroes
-    assert_ne!(random_bytes.expose_borrowed(), &[0u8; 32]);
-
-    // Use a simplified version of the random bytes generator.
-    use memsecurity::CsprngArraySimple;
-
-    // Generate one random byte
-    let random8_byte = CsprngArraySimple::gen_u8_byte();
-
-    // Generate 8 random bytes
-    let random8 = CsprngArraySimple::gen_u8_array();
-    assert_eq!(random8.expose_borrowed().len(), 8);
-
-    // Generate 16 random bytes
-    let random16 = CsprngArraySimple::gen_u16_array();
-    assert_eq!(random16.expose_borrowed().len(), 16);
-
-    // Generate 24 random bytes
-    let random24 = CsprngArraySimple::gen_u24_array();
-    assert_eq!(random24.expose_borrowed().len(), 24);
-
-    // Generate 32 random bytes
-    let random32 = CsprngArraySimple::gen_u32_array();
-    assert_eq!(random32.expose_borrowed().len(), 32);
-
-    // Generate 64 random bytes
-    let random64 = CsprngArraySimple::gen_u64_array();
-    assert_eq!(random64.expose_borrowed().len(), 64);
+    assert_ne!(random_bytes.expose(), &[0u8; 32]);
     ```
 2. ###### Using the data types that are zeroed when dropped
     Sometimes sensitive data needs to be zeroed when it is dropped. This can be to protect secrets like encryption keys or passwords by ensuring they are not kept in memory when they are no longer needed. The `symm_asymm` feature must be enabled. The `clonable_mem` feature can be enabled if they you need to clone these secrets (Use these with care). Most of these have the `.expose_borrowed()` method which exposes the inner value if you want to use that value.
@@ -66,7 +40,7 @@ This crate has not received an audit. Use at your own risk!!!
     let array_like = ZeroizeArray::<4>::new([4u8, 3,2,1]);
 
     // Use the value
-    array_like.expose_borrowed();
+    array_like.expose_owned();
 
     // Create a Vec like array using `BytesMut` from `bytes` crate that re-allocates when it's capacity is exceeded.
     let mut vector_like = ZeroizeBytes::new();
@@ -78,31 +52,31 @@ This crate has not received an audit. Use at your own risk!!!
     vector_like.expose_borrowed();
     ```
 3. ###### Encrypt a secret while in memory using Ascon128a encryption
-    Whenever you want to encrypt secrets like passwords or encryption keys in memory, enable the `encryption` feature to use the `EncryptedMem` type. `mlock` and `munlock` are also implemented in this data.
-    The encryption key is generated afresh on each app run
+    Whenever you want to encrypt secrets like passwords or encryption keys in memory, enable the `encryption` feature to use the `EncryptedMem` type. `mlock` and `munlock` are also implemented in this data. The encryption key is generated afresh on each app run.
     ```rust
-    use memsecurity::{EncryptedMem, CsprngArray};
+    use memsecurity::EncryptedMem;
+    use random_detached::{RandomBytes,Generator};
 
     // Initialize the struct with a random nonce (Nonce for Ascon128a)
-    let mut foo = EncryptedMem::new();
+    let mut foo = EncryptedMem::new().unwrap();
 
     // Here a some random bytes are generated to simulate
     // some secret you want to protect.
     // Here the value must implement `Zeroize` trait
     // and `impl From<AsRef<[u8]>>` trait so be accepted
     // by the `encrypt()` and `decrypt()` methods of `EncryptedMem`.
-    let plaintext_bytes = CsprngArray::<32>::gen();
+    let plaintext_bytes = RandomBytes::<1>::new().unwrap();
 
     // Encrypt the secret in memory using the randomly
     // generated encryption key that is `mlocked`
-    foo.encrypt(&plaintext_bytes).unwrap();
+    foo.encrypt(&mut plaintext_bytes.expose().to_vec()).unwrap();
 
     // Decrypt the secret using the `mlocked` key
     let decrypted = foo.decrypt().unwrap();
 
     assert_eq!(
-        plaintext_bytes.expose_borrowed(),
-        decrypted.expose_borrowed()
+        plaintext_bytes.expose(),
+        decrypted.expose_borrowed().as_ref()
     );
     ```
 
