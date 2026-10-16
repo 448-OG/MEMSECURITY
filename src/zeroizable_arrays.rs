@@ -3,6 +3,7 @@ use arrayvec::ArrayVec;
 use borsh::{BorshDeserialize, BorshSerialize};
 use bytes::{BufMut, BytesMut};
 use core::fmt;
+use core::ops::DerefMut;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[cfg(feature = "random")]
@@ -352,7 +353,8 @@ impl<const N: usize> fmt::Debug for ZeroizeBytesArray<N> {
 
 impl<const N: usize> Zeroize for ZeroizeBytesArray<N> {
     fn zeroize(&mut self) {
-        self.0.clear()
+        self.0.deref_mut().zeroize();
+        self.0.clear();
     }
 }
 
@@ -457,7 +459,8 @@ impl fmt::Debug for ZeroizeBytes {
 
 impl Zeroize for ZeroizeBytes {
     fn zeroize(&mut self) {
-        self.0.clear()
+        self.0.deref_mut().zeroize();
+        self.0.clear();
     }
 }
 
