@@ -1,6 +1,6 @@
 [package]
 name = "memsecurity"
-version = "3.5.2"
+version = "4.0.0"
 authors = ["448 ENGINEERING Developers <superuser@448.africa>"]
 license = "Apache-2.0 OR MIT"
 description = "Securely hold secrets in memory and protect them against cross-protection-boundary readout via microarchitectural, via attacks on physical layout, and via coldboot attacks."
@@ -8,65 +8,85 @@ keywords = ["in-memory", "security"]
 categories = ["cryptography", "memory-management"]
 edition = "2021"
 readme = "README.md"
-homepage = "https://github.com/448-engineering/MEMSECURITY"
-repository = "https://github.com/448-engineering/MEMSECURITY"
+homepage = "https://github.com/448-OG/MEMSECURITY"
+repository = "https://github.com/448-OG/MEMSECURITY"
+
+[dependencies]
+arrayvec = {
+  version = "0.7.8",
+  default-features = true,
+  features = [
+    "zeroize",
+  ],
+  optional = true
+}
+ascon-aead = { version = "0.6.0", features = ["zeroize"], optional = true }
+bitcode = { version = "0.6.9", default-features = false, features = ["derive", "std", "uuid"], optional = true }
+blake3 = { version = "1.8.7", default-features = true, optional = true }
+bytes = { version = "1.12.1", optional = true }
+ed25519-dalek = {
+  version = "2.2.0",
+  features = [
+    "signature",
+    "zeroize",
+  ],
+  optional = true
+}
+memsec = { version = "0.7.0", optional = true }
+once_cell = { version = "1.21.4", optional = true }
+random-detached = { version = "1.3.0", optional = true }
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+uuid = {
+  version = "1.28.0",
+  default-features = false,
+  features = [
+    "rng",
+    "v4",
+  ],
+  optional = true
+}
+x25519-dalek = {
+  version = "2.0.1",
+  features = [
+    "static_secrets",
+    "zeroize",
+  ],
+  optional = true
+}
+zeroize = { version = "1.9.1", default-features = false, features = ["derive"] }
 
 [badges]
 maintenance = { status = "passively-maintained" }
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
-arrayvec = { version = "0.7.4", default-features = true, features = [
-    "zeroize",
-], optional = true }
-ascon-aead = { version = "0.4.2", optional = true, features = ["zeroize"] }
-blake3 = { version = "1.5.0", default-features = true, optional = true }
-borsh = { version = "1.2.1", features = ["bytes", "borsh-derive", "derive"] }
-bytes = { version = "1.5.0", optional = true }
-ed25519-dalek = { version = "2.1.0", features = [
-    "signature",
-    "zeroize",
-], optional = true }
-memsec = { version = "0.6.3", optional = true }
-once_cell = { version = "1.19.0", optional = true }
-rand_chacha = { version = "0.3.1", default-features = false, optional = true }
-rand_core = { version = "0.6.4", features = ["getrandom"], optional = true }
-uuid = { version = "1.6.1", default-features = false, features = [
-    "v4",
-    "rng",
-], optional = true }
-x25519-dalek = { version = "2.0.0", features = [
-    "zeroize",
-    "static_secrets",
-], optional = true }
-zeroize = { version = "1.7.0", default-features = false, features = ["derive"] }
-
 [features]
 default = ["encryption", "random", "symm_asymm"]
-encryption = [
-    "dep:once_cell",
-    "random",
-    "dep:memsec",
-    "dep:blake3",
-    "symm_asymm",
-    "dep:ascon-aead",
-]
-random = ["dep:rand_core", "dep:rand_chacha"]
+bitcode = ["dep:bitcode"]
+clonable_mem = ["dep:random-detached"]
 ed25519 = ["dep:ed25519-dalek"]
-x25519 = ["dep:x25519-dalek"]
-symm_asymm = ["dep:bytes", "dep:arrayvec", "dep:blake3"]
-clonable_mem = []
-uuid = ["dep:uuid"]
-full = [
-    "encryption",
-    "random",
-    "ed25519",
-    "x25519",
-    "symm_asymm",
-    "clonable_mem",
-    "uuid",
+encryption = [
+  "dep:ascon-aead",
+  "dep:blake3",
+  "dep:memsec",
+  "dep:once_cell",
+  "random",
+  "symm_asymm",
 ]
+full = [
+  "clonable_mem",
+  "ed25519",
+  "encryption",
+  "random",
+  "symm_asymm",
+  "uuid",
+  "x25519",
+]
+random = ["dep:random-detached"]
+serde_derive = ["bytes/serde", "serde/derive"]
+symm_asymm = ["dep:arrayvec", "dep:blake3", "dep:bytes"]
+uuid = ["dep:uuid"]
+x25519 = ["dep:x25519-dalek"]
 
 [profile.dev]
 overflow-checks = true

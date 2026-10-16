@@ -11,38 +11,43 @@ fn main() {
 ))]
 fn foo() {
     use memsecurity::*;
-    let mut foo = EncryptedMem::new();
+    use random_detached::{Generator, RandomBytes};
+    let mut foo = EncryptedMem::new().unwrap();
 
-    let plaintext_bytes = CsprngArray::<32>::gen();
+    let plaintext_bytes = RandomBytes::<32>::new().unwrap();
 
-    foo.encrypt(&plaintext_bytes).unwrap();
+    foo.encrypt(plaintext_bytes.expose()).unwrap();
 
     let decrypted = foo.decrypt().unwrap();
     assert_eq!(
-        plaintext_bytes.expose_borrowed(),
-        decrypted.expose_borrowed()
+        plaintext_bytes.expose(),
+        decrypted.expose_borrowed().as_ref()
     );
 
     {
-        assert!(foo.sign(CsprngArray::<32>::gen()).is_ok());
+        assert!(foo
+            .sign(*RandomBytes::<32>::new().unwrap().expose())
+            .is_ok());
 
-        let plaintext_bytes = CsprngArray::<4>::gen();
+        let plaintext_bytes = RandomBytes::<4>::new().unwrap();
 
-        foo.encrypt(&plaintext_bytes).unwrap();
+        foo.encrypt(plaintext_bytes.expose()).unwrap();
 
-        assert!(foo.sign(CsprngArray::<32>::gen()).is_err());
+        assert!(foo
+            .sign(*RandomBytes::<32>::new().unwrap().expose())
+            .is_err());
     }
 
     {
-        let mut alice_kek = EncryptedMem::new();
-        let alice_secret = CsprngArray::<32>::gen();
-        alice_kek.encrypt(&alice_secret).unwrap();
+        let mut alice_kek = EncryptedMem::new().unwrap();
+        let alice_secret = RandomBytes::<32>::new().unwrap();
+        alice_kek.encrypt(alice_secret.expose()).unwrap();
         drop(alice_secret);
         let alice_public = alice_kek.x25519_public_key().unwrap();
 
-        let mut bob_kek = EncryptedMem::new();
-        let bob_secret = CsprngArray::<32>::gen();
-        bob_kek.encrypt(&bob_secret).unwrap();
+        let mut bob_kek = EncryptedMem::new().unwrap();
+        let bob_secret = RandomBytes::<32>::new().unwrap();
+        bob_kek.encrypt(bob_secret.expose()).unwrap();
         drop(bob_secret);
         let bob_public = bob_kek.x25519_public_key().unwrap();
 
@@ -53,17 +58,7 @@ fn foo() {
     }
 
     {
-        use borsh::{to_vec, BorshDeserialize};
-
-        let random = CsprngArray::<32>::gen();
-        let random_bytes = to_vec(&random).unwrap();
-        let deser_random = CsprngArray::<32>::try_from_slice(&random_bytes).unwrap();
-
-        assert_eq!(random.expose_borrowed(), deser_random.expose_borrowed())
-    }
-
-    {
-        let mut store = EncryptedMem::new();
+        let mut store = EncryptedMem::new().unwrap();
         store.encrypt_uuid().unwrap();
 
         let decrypted = store.decrypt_uuid().unwrap();

@@ -20,11 +20,6 @@ mod zeroizable_arrays;
 #[cfg(feature = "symm_asymm")]
 pub use zeroizable_arrays::*;
 
-#[cfg(feature = "random")]
-mod random;
-#[cfg(feature = "random")]
-pub use random::*;
-
 #[cfg(feature = "symm_asymm")]
 mod traits;
 #[cfg(feature = "symm_asymm")]
@@ -35,6 +30,8 @@ pub use traits::*;
 pub use arrayvec;
 #[cfg(feature = "encryption")]
 pub use ascon_aead;
+#[cfg(feature = "bitcode")]
+pub use bitcode;
 #[cfg(feature = "encryption")]
 pub use blake3;
 #[cfg(feature = "encryption")]
@@ -45,14 +42,12 @@ pub use ed25519_dalek;
 pub use memsec;
 #[cfg(feature = "encryption")]
 pub use once_cell;
-#[cfg(feature = "random")]
-pub use rand_chacha;
-#[cfg(feature = "random")]
-pub use rand_core;
+
+#[cfg(feature = "serde")]
+pub use serde;
 #[cfg(feature = "uuid")]
 pub use uuid;
 #[cfg(feature = "x25519")]
 pub use x25519_dalek;
 
-pub use borsh;
 pub use zeroize;
