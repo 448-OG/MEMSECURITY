@@ -1,12 +1,12 @@
 [package]
 name = "memsecurity"
-version = "4.0.0"
-authors = ["448 ENGINEERING Developers <superuser@448.africa>"]
+version = "4.0.1"
+authors = ["448 OG <superuser@448.africa>"]
 license = "Apache-2.0 OR MIT"
 description = "Securely hold secrets in memory and protect them against cross-protection-boundary readout via microarchitectural, via attacks on physical layout, and via coldboot attacks."
 keywords = ["in-memory", "security"]
 categories = ["cryptography", "memory-management"]
-edition = "2021"
+edition = "2024"
 readme = "README.md"
 homepage = "https://github.com/448-OG/MEMSECURITY"
 repository = "https://github.com/448-OG/MEMSECURITY"
