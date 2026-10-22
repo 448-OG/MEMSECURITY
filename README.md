@@ -81,7 +81,7 @@ This crate has not received an audit. Use at your own risk!!!
     ```
 
 #### LICENSE
-This crate is licensed under Apache license and all contributions and redistributions must bear the same license.
+This crate is dual-licensed under the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option, and all contributions and redistributions must bear the same license.
 
 #### Code of Conduct
 All conversations and contributions must obey the Rust Code of Conduct [https://www.rust-lang.org/policies/code-of-conduct](https://www.rust-lang.org/policies/code-of-conduct)
