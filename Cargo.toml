@@ -1,6 +1,6 @@
 [package]
 name = "memsecurity"
-version = "4.0.1"
+version = "4.2.0"
 authors = ["448 OG <superuser@448.africa>"]
 license = "Apache-2.0 OR MIT"
 description = "Securely hold secrets in memory and protect them against cross-protection-boundary readout via microarchitectural, via attacks on physical layout, and via coldboot attacks."
