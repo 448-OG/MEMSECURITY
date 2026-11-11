@@ -111,7 +111,7 @@ mod key_ops {
     use random_detached::{Generator, RandomBytes};
     use zeroize::{Zeroize, ZeroizeOnDrop};
 
-    static SEALING_KEY: Lazy<SealingKey<DEFAULT_VAULT_PAGE_SIZE, DEFAULT_VAULT_PAGES>> =
+    static SEALING_KEY: Lazy<SealingKey<DEFAULT_VAULT_PAGES, DEFAULT_VAULT_PAGE_SIZE>> =
         Lazy::new(|| SealingKey::new().unwrap());
 
     impl<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize>
