@@ -3,7 +3,7 @@
 //! Rowhammer or RAMBleed would require every bit of the block. These attacks are specified in the crate
 //! documentation.
 
-use core::fmt;
+use core::{fmt, ptr::NonNull};
 
 use zeroize::Zeroizing;
 
@@ -21,8 +21,10 @@ pub const SECRET_KEY_32BYTE: usize = 32;
 /// The nonce length of Ascon 128 cipher
 pub const ASCON128_NONCE_LEN: usize = 16;
 
+/// The smallest sealing key accepted, 16KiB, matching the OpenSSL implementation.
+pub const MIN_SEALING_KEY_SIZE: usize = 16 * 1024;
 /// The default size of the sealing key, 16KiB.
-pub const DEFAULT_SEALING_KEY_SIZE: usize = 16 * 1024;
+pub const DEFAULT_SEALING_KEY_SIZE: usize = MIN_SEALING_KEY_SIZE;
 
 /// A struct that holds the encrypted secret and performs encryption and decryption on the secret.
 /// #### Structure
@@ -81,14 +83,17 @@ impl fmt::Debug for EncryptedMem {
 /// while it's loaded in memory.
 /// #### Structure
 /// ```rs
-/// pub struct SealingKey<const SEALING_KEY_SIZE: usize>([u8; SEALING_KEY_SIZE]);
+/// pub struct SealingKey<const SEALING_KEY_SIZE: usize>(NonNull<[u8; SEALING_KEY_SIZE]>);
 /// ```
-pub struct SealingKey<const SEALING_KEY_SIZE: usize>([u8; SEALING_KEY_SIZE]);
+/// The block is allocated with `memsec::malloc`: page-aligned, locked,
+/// and fenced by guard pages.
+pub struct SealingKey<const SEALING_KEY_SIZE: usize>(NonNull<[u8; SEALING_KEY_SIZE]>);
 
 mod key_ops {
     use super::SealingKey;
     use crate::{
-        EncryptedMem, MemSecurityErr, MemSecurityResult, DEFAULT_SEALING_KEY_SIZE,
+        DEFAULT_SEALING_KEY_SIZE, EncryptedMem, MIN_SEALING_KEY_SIZE, MemSecurityErr,
+        MemSecurityResult,
     };
     use ascon_aead::{
         AsconAead128, AsconAead128Key, AsconAead128Tag,
@@ -96,7 +101,6 @@ mod key_ops {
     };
     use core::ops::Deref;
     use once_cell::sync::Lazy;
-    use random_detached::{Generator, RandomBytes};
     use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
     /// The length of the Ascon-AEAD128 authentication tag, which follows
@@ -107,41 +111,71 @@ mod key_ops {
         Lazy::new(|| SealingKey::new().unwrap());
 
     impl<const SEALING_KEY_SIZE: usize> SealingKey<SEALING_KEY_SIZE> {
-        fn new() -> MemSecurityResult<Self> {
-            let mut outcome = SealingKey(*RandomBytes::<SEALING_KEY_SIZE>::new()?.expose());
-            outcome.lock_pages();
+        pub(super) fn new() -> MemSecurityResult<Self> {
+            if SEALING_KEY_SIZE < MIN_SEALING_KEY_SIZE {
+                return Err(MemSecurityErr::SealingKeyTooSmall {
+                    minimum: MIN_SEALING_KEY_SIZE,
+                    found: SEALING_KEY_SIZE,
+                });
+            }
+
+            // `malloc` returns a page-aligned block with guard pages which
+            // is already locked.
+            #[allow(unsafe_code)]
+            let block = unsafe { memsec::malloc::<[u8; SEALING_KEY_SIZE]>() }
+                .ok_or(MemSecurityErr::AllocationErr)?;
+
+            // If filling fails, dropping `outcome` frees the block.
+            let mut outcome = SealingKey(block);
+            random_detached::getrandom::fill(outcome.as_mut_slice())?;
 
             Ok(outcome)
         }
 
         #[allow(unsafe_code)]
-        fn lock_pages(&mut self) {
-            unsafe { memsec::mlock(self.0.as_mut_ptr(), SEALING_KEY_SIZE) }; //TODO Handle this bool
+        fn as_slice(&self) -> &[u8] {
+            // SAFETY: the block is live until `drop`.
+            unsafe { self.0.as_ref() }
         }
 
         #[allow(unsafe_code)]
-        fn munlock_pages(&mut self) {
-            unsafe { memsec::munlock(self.0.as_mut_ptr(), SEALING_KEY_SIZE) }; //TODO Handle this bool
+        fn as_mut_slice(&mut self) -> &mut [u8] {
+            // SAFETY: as above, and `&mut self` guarantees exclusive access.
+            unsafe { self.0.as_mut() }
         }
 
         fn kek(&self) -> [u8; blake3::OUT_LEN] {
-            *blake3::hash(&self.0).as_bytes()
+            *blake3::hash(self.as_slice()).as_bytes()
         }
     }
 
+    // SAFETY: the block is owned by the `SealingKey` and only mutated through
+    // `&mut self`, so sharing `&SealingKey` across threads is read-only.
+    #[allow(unsafe_code)]
+    unsafe impl<const SEALING_KEY_SIZE: usize> Send for SealingKey<SEALING_KEY_SIZE> {}
+    #[allow(unsafe_code)]
+    unsafe impl<const SEALING_KEY_SIZE: usize> Sync for SealingKey<SEALING_KEY_SIZE> {}
+
     impl<const SEALING_KEY_SIZE: usize> Zeroize for SealingKey<SEALING_KEY_SIZE> {
         fn zeroize(&mut self) {
-            self.0.zeroize();
+            self.as_mut_slice().zeroize();
         }
     }
 
     impl<const SEALING_KEY_SIZE: usize> ZeroizeOnDrop for SealingKey<SEALING_KEY_SIZE> {}
 
     impl<const SEALING_KEY_SIZE: usize> Drop for SealingKey<SEALING_KEY_SIZE> {
+        #[allow(unsafe_code)]
         fn drop(&mut self) {
-            self.munlock_pages();
+            self.zeroize();
 
-            debug_assert_eq!(self.0, [0u8; SEALING_KEY_SIZE]);
+            debug_assert!(
+                self.as_slice().iter().all(|&byte| byte == 0),
+                "sealing key was not wiped"
+            );
+
+            // SAFETY: the block came from `memsec::malloc`.
+            unsafe { memsec::free(self.0) };
         }
     }
 
@@ -460,7 +494,10 @@ mod key_ops {
             // munlock zeroes the memory before unlocking it.
             unsafe { memsec::munlock(self.0.as_mut_ptr(), blake3::OUT_LEN) }; //TODO Handle this bool
 
-            debug_assert_eq!(*self.0, [0u8; blake3::OUT_LEN]);
+            debug_assert!(
+                self.0.iter().all(|&byte| byte == 0),
+                "KEK was not wiped"
+            );
         }
     }
 }
@@ -558,6 +595,19 @@ mod tests {
         secret.nonce[0] ^= 1;
 
         assert_eq!(secret.decrypt().unwrap_err(), MemSecurityErr::EncryptionErr);
+    }
+
+    // A sealing key below the minimum size is an error.
+    #[test]
+    fn sealing_key_rejects_size_below_minimum() {
+        assert_eq!(
+            SealingKey::<{ MIN_SEALING_KEY_SIZE - 1 }>::new().err(),
+            Some(MemSecurityErr::SealingKeyTooSmall {
+                minimum: MIN_SEALING_KEY_SIZE,
+                found: MIN_SEALING_KEY_SIZE - 1,
+            })
+        );
+        assert!(SealingKey::<MIN_SEALING_KEY_SIZE>::new().is_ok());
     }
 
     fn encrypted(plaintext: Vec<u8>) -> EncryptedMem {

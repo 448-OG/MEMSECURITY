@@ -26,6 +26,17 @@ pub enum MemSecurityErr {
     },
     /// Cannot convert into type from a slice
     TryFromSliceError,
+    /// Unable to allocate the locked memory block for the sealing key
+    #[cfg(feature = "encryption")]
+    AllocationErr,
+    /// The sealing key is smaller than the minimum size
+    #[cfg(feature = "encryption")]
+    SealingKeyTooSmall {
+        /// The smallest accepted size of the sealing key
+        minimum: usize,
+        /// The size that was requested
+        found: usize,
+    },
     /// Unable to generate random bytes/chars
     #[cfg(feature = "random")]
     Random(random_detached::getrandom::Error),
