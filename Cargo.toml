@@ -14,7 +14,7 @@ repository = "https://github.com/448-OG/MEMSECURITY"
 [dependencies]
 ascon-aead = { version = "0.6.0", features = ["zeroize"], optional = true }
 bitcode = { version = "0.6.9", default-features = false, features = ["derive", "std", "uuid"], optional = true }
-blake3 = { version = "1.8.7", default-features = true, optional = true }
+blake3 = { version = "1.8.7", default-features = true, features = ["zeroize"], optional = true }
 ed25519-dalek = { version = "2.2.0", features = ["signature", "zeroize"], optional = true }
 memsec = { version = "0.7.0", optional = true }
 once_cell = { version = "1.21.4", optional = true }
