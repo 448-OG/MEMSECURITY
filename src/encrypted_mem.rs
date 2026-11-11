@@ -100,13 +100,17 @@ mod key_ops {
         DEFAULT_VAULT_PAGE_SIZE,
     };
     use ascon_aead::{
-        aead::{Aead, KeyInit},
-        AsconAead128, AsconAead128Key,
+        AsconAead128, AsconAead128Key, AsconAead128Tag,
+        aead::{Aead, AeadInOut, KeyInit, inout::InOutBuf},
     };
     use core::ops::Deref;
     use once_cell::sync::Lazy;
     use random_detached::{Generator, RandomBytes};
     use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+    /// The length of the Ascon-AEAD128 authentication tag, which follows
+    /// the ciphertext.
+    const ASCON128_TAG_LEN: usize = 16;
 
     static SEALING_KEY: Lazy<SealingKey<DEFAULT_VAULT_PAGES, DEFAULT_VAULT_PAGE_SIZE>> =
         Lazy::new(|| SealingKey::new().unwrap());
@@ -202,17 +206,20 @@ mod key_ops {
             Ok(self)
         }
 
-        /// Performs an decryption operation.
+        /// Performs a decryption operation.
+        ///
+        /// The plaintext is only ever written into the returned
+        /// [Zeroizing] buffer, so no unwiped copy is left in freed memory.
+        ///
+        /// # Errors
+        ///
+        /// [MemSecurityErr::EncryptionErr] if nothing has been encrypted,
+        /// the ciphertext is shorter than its tag, or authentication fails.
         pub fn decrypt(&self) -> MemSecurityResult<Zeroizing<Vec<u8>>> {
-            let mut kek = SEALING_KEY.kek();
-            let kek = LockedKek::new(&mut kek);
+            let mut plaintext = Zeroizing::new(vec![0u8; self.plaintext_len()?]);
+            self.decrypt_into(&mut plaintext)?;
 
-            let cipher = AsconAead128::new(&AsconAead128Key::try_from(kek[0..16].as_ref())?);
-
-            match cipher.decrypt(&self.nonce, self.ciphertext.as_slice()) {
-                Ok(plaintext) => Ok(Zeroizing::new(plaintext)),
-                Err(_) => Err(MemSecurityErr::EncryptionErr),
-            }
+            Ok(plaintext)
         }
 
         /// Hash some bytes with Blake3 using a key to create a HMAC
@@ -246,58 +253,93 @@ mod key_ops {
             blake3::derive_key(plaintext, &*kek)
         }
 
-        /// Performs an decryption operation expecting a 16 byte array that is zeroed when dropped.
+        /// Performs a decryption operation expecting a 16 byte array that is zeroed when dropped.
+        ///
+        /// The plaintext is only ever written into the returned
+        /// [Zeroizing] array. Moving the array out of this function can still
+        /// leave a copy in a stack frame that is not wiped.
+        ///
+        /// # Errors
+        ///
+        /// - [MemSecurityErr::InvalidArrayLength] if the secret is not 16
+        ///   bytes long. This is checked before authenticating.
+        /// - [MemSecurityErr::EncryptionErr] if nothing has been
+        ///   encrypted, the ciphertext is shorter than its tag, or
+        ///   authentication fails.
         pub fn decrypt_16byte(&self) -> MemSecurityResult<Zeroizing<[u8; 16]>> {
-            let mut kek = SEALING_KEY.kek();
-            let kek = LockedKek::new(&mut kek);
-
-            let cipher = AsconAead128::new(&AsconAead128Key::try_from(kek[0..16].as_ref())?);
-
-            match cipher.decrypt(&self.nonce, self.ciphertext.as_slice()) {
-                Ok(plaintext) => {
-                    let plaintext = Zeroizing::new(plaintext);
-                    let plaintext_len = plaintext.len();
-                    if plaintext_len != crate::SECRET_KEY_16BYTE {
-                        Err(MemSecurityErr::InvalidArrayLength {
-                            expected: crate::SECRET_KEY_16BYTE,
-                            found: plaintext_len,
-                        })
-                    } else {
-                        let mut array = Zeroizing::new([0u8; crate::SECRET_KEY_16BYTE]);
-                        array.copy_from_slice(&plaintext);
-
-                        Ok(array)
-                    }
-                }
-                Err(_) => Err(MemSecurityErr::EncryptionErr),
-            }
+            self.decrypt_array()
         }
 
-        /// Performs an decryption operation expecting a 32 byte array that is zeroed when dropped.
+        /// Performs a decryption operation expecting a 32 byte array that is zeroed when dropped.
+        ///
+        /// The plaintext is only ever written into the returned
+        /// [Zeroizing] array. Moving the array out of this function can still
+        /// leave a copy in a stack frame that is not wiped.
+        ///
+        /// # Errors
+        ///
+        /// - [MemSecurityErr::InvalidArrayLength] if the secret is not 32
+        ///   bytes long. This is checked before authenticating.
+        /// - [MemSecurityErr::EncryptionErr] if nothing has been
+        ///   encrypted, the ciphertext is shorter than its tag, or
+        ///   authentication fails.
         pub fn decrypt_32byte(&self) -> MemSecurityResult<Zeroizing<[u8; 32]>> {
+            self.decrypt_array()
+        }
+
+        /// Decrypts into a [Zeroizing] array of `N` bytes. Returning the
+        /// array moves it, which can leave an unwiped copy on the stack.
+        fn decrypt_array<const N: usize>(&self) -> MemSecurityResult<Zeroizing<[u8; N]>> {
+            let plaintext_len = self.plaintext_len()?;
+            if plaintext_len != N {
+                return Err(MemSecurityErr::InvalidArrayLength {
+                    expected: N,
+                    found: plaintext_len,
+                });
+            }
+
+            let mut plaintext = Zeroizing::new([0u8; N]);
+            self.decrypt_into(&mut *plaintext)?;
+
+            Ok(plaintext)
+        }
+
+        /// The length of the plaintext, which is the ciphertext without the
+        /// authentication tag.
+        fn plaintext_len(&self) -> MemSecurityResult<usize> {
+            self.ciphertext
+                .len()
+                .checked_sub(ASCON128_TAG_LEN)
+                .ok_or(MemSecurityErr::EncryptionErr)
+        }
+
+        /// Decrypts the ciphertext straight into `plaintext`, so the
+        /// plaintext never exists outside of it.
+        ///
+        /// `plaintext` must be as long as the ciphertext without its tag.
+        /// It is wiped if decryption fails, so unauthenticated bytes never
+        /// outlive this call.
+        pub(super) fn decrypt_into(&self, plaintext: &mut [u8]) -> MemSecurityResult<()> {
+            let (body, tag) = self
+                .ciphertext
+                .split_last_chunk::<ASCON128_TAG_LEN>()
+                .ok_or(MemSecurityErr::EncryptionErr)?;
+            let buffer =
+                InOutBuf::new(body, plaintext).map_err(|_| MemSecurityErr::EncryptionErr)?;
+
             let mut kek = SEALING_KEY.kek();
             let kek = LockedKek::new(&mut kek);
 
             let cipher = AsconAead128::new(&AsconAead128Key::try_from(kek[0..16].as_ref())?);
 
-            match cipher.decrypt(&self.nonce, self.ciphertext.as_slice()) {
-                Ok(plaintext) => {
-                    let plaintext = Zeroizing::new(plaintext);
-                    let plaintext_len = plaintext.len();
-                    if plaintext_len != crate::SECRET_KEY_32BYTE {
-                        Err(MemSecurityErr::InvalidArrayLength {
-                            expected: crate::SECRET_KEY_32BYTE,
-                            found: plaintext_len,
-                        })
-                    } else {
-                        let mut array = Zeroizing::new([0u8; crate::SECRET_KEY_32BYTE]);
-                        array.copy_from_slice(&plaintext);
-
-                        Ok(array)
-                    }
-                }
-                Err(_) => Err(MemSecurityErr::EncryptionErr),
+            let outcome = cipher
+                .decrypt_inout_detached(&self.nonce, &[], buffer, &AsconAead128Tag::from(*tag))
+                .map_err(|_| MemSecurityErr::EncryptionErr);
+            if outcome.is_err() {
+                plaintext.zeroize();
             }
+
+            outcome
         }
 
         /// Sign a message and return an Ed25519 digital signature
@@ -395,5 +437,94 @@ mod key_ops {
 
             debug_assert_eq!(*self.0, [0u8; blake3::OUT_LEN]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MemSecurityErr;
+
+    // Flipping the first or last byte of the ciphertext body or of the tag
+    // fails authentication in every decrypt function.
+    #[test]
+    fn decrypt_rejects_tampered_ciphertext() {
+        for secret_len in [SECRET_KEY_16BYTE, SECRET_KEY_32BYTE] {
+            let tag_end = encrypted(vec![5u8; secret_len]).ciphertext().len() - 1;
+
+            for position in [0, secret_len - 1, secret_len, tag_end] {
+                let mut secret = encrypted(vec![5u8; secret_len]);
+                secret.ciphertext[position] ^= 1;
+
+                assert_eq!(secret.decrypt().unwrap_err(), MemSecurityErr::EncryptionErr);
+                let fixed_size = if secret_len == SECRET_KEY_16BYTE {
+                    secret.decrypt_16byte().map(drop)
+                } else {
+                    secret.decrypt_32byte().map(drop)
+                };
+                assert_eq!(fixed_size.unwrap_err(), MemSecurityErr::EncryptionErr);
+            }
+        }
+    }
+
+    // A failed decrypt leaves no unauthenticated bytes in the buffer.
+    #[test]
+    fn decrypt_into_wipes_buffer_on_failure() {
+        let mut secret = encrypted(vec![5u8; 32]);
+        secret.ciphertext[0] ^= 1;
+
+        let mut plaintext = [0xAAu8; 32];
+        assert_eq!(
+            secret.decrypt_into(&mut plaintext).unwrap_err(),
+            MemSecurityErr::EncryptionErr
+        );
+        assert_eq!(plaintext, [0u8; 32]);
+    }
+
+    // A buffer of the wrong length is an error, not a panic.
+    #[test]
+    fn decrypt_into_rejects_length_mismatch() {
+        let secret = encrypted(vec![5u8; 32]);
+
+        let mut plaintext = [0u8; 31];
+        assert_eq!(
+            secret.decrypt_into(&mut plaintext).unwrap_err(),
+            MemSecurityErr::EncryptionErr
+        );
+    }
+
+    // A ciphertext shorter than the 16 byte tag cannot be authenticated.
+    #[test]
+    fn decrypt_rejects_truncated_ciphertext() {
+        let mut secret = encrypted(vec![5u8; 32]);
+        secret.ciphertext.truncate(15);
+
+        assert_eq!(secret.decrypt().unwrap_err(), MemSecurityErr::EncryptionErr);
+    }
+
+    // An empty secret is still authenticated by its tag.
+    #[test]
+    fn decrypt_rejects_tampered_tag_on_empty_secret() {
+        let mut secret = encrypted(Vec::new());
+        assert_eq!(secret.ciphertext().len(), 16);
+        secret.ciphertext[0] ^= 1;
+
+        assert_eq!(secret.decrypt().unwrap_err(), MemSecurityErr::EncryptionErr);
+    }
+
+    // Decrypting under a different nonce fails authentication.
+    #[test]
+    fn decrypt_rejects_tampered_nonce() {
+        let mut secret = encrypted(vec![5u8; 32]);
+        secret.nonce[0] ^= 1;
+
+        assert_eq!(secret.decrypt().unwrap_err(), MemSecurityErr::EncryptionErr);
+    }
+
+    fn encrypted(plaintext: Vec<u8>) -> EncryptedMem {
+        let mut secret = EncryptedMem::new().unwrap();
+        secret.encrypt(&plaintext).unwrap();
+
+        secret
     }
 }
