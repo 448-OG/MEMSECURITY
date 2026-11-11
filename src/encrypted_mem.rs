@@ -172,7 +172,7 @@ mod key_ops {
         for SealingKey<VAULT_PAGES, VAULT_PAGE_SIZE>
     {
         fn zeroize(&mut self) {
-            self.0 = [[0u8; VAULT_PAGE_SIZE]; VAULT_PAGES];
+            self.0.zeroize();
         }
     }
 

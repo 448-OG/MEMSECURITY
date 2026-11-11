@@ -74,7 +74,7 @@ impl Eq for ZeroizeByte {}
 
 impl Zeroize for ZeroizeByte {
     fn zeroize(&mut self) {
-        self.0 = 0;
+        self.0.zeroize();
     }
 }
 
@@ -276,7 +276,7 @@ impl<const N: usize> ZeroizeArray<N> {
 
 impl<const N: usize> Zeroize for ZeroizeArray<N> {
     fn zeroize(&mut self) {
-        self.0[..].copy_from_slice(&[0u8; N]);
+        self.0.zeroize();
     }
 }
 
@@ -723,7 +723,7 @@ impl<const N: usize> Eq for ZeroizeArrayVecBytes<N> {}
 
 impl<const N: usize> Zeroize for ZeroizeArrayVecBytes<N> {
     fn zeroize(&mut self) {
-        self.0.clear()
+        self.0.zeroize();
     }
 }
 
