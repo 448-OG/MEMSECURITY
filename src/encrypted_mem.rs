@@ -1,6 +1,7 @@
-//! This module contains types and methods used to create a sealing key that stretches across multiple
-//! memory pages ensuring impossible key recovery if certain attacks are used to try and recover the key.
-//! These attacks are specified in the crate documentation.
+//! This module contains types and methods used to create a large, locked sealing key. The key encryption
+//! key is derived by hashing the whole block with Blake3, so recovering it through attacks such as
+//! Rowhammer or RAMBleed would require every bit of the block. These attacks are specified in the crate
+//! documentation.
 
 use core::fmt;
 
@@ -20,13 +21,8 @@ pub const SECRET_KEY_32BYTE: usize = 32;
 /// The nonce length of Ascon 128 cipher
 pub const ASCON128_NONCE_LEN: usize = 16;
 
-/// The number of pages used to accommodate one page of 4KiB in size.
-pub const DEFAULT_VAULT_PAGES: usize = 4;
-/// A size in KiB of one page (a page is a fixed-size block of memory used by the operating system to manage memory)
-pub const DEFAULT_VAULT_PAGE_SIZE: usize = 4096_usize;
-/// The layout of the bytes used to create the key
-pub type VaultPagesLayout<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize> =
-    [[u8; VAULT_PAGE_SIZE]; VAULT_PAGES];
+/// The default size of the sealing key, 16KiB.
+pub const DEFAULT_SEALING_KEY_SIZE: usize = 16 * 1024;
 
 /// A struct that holds the encrypted secret and performs encryption and decryption on the secret.
 /// #### Structure
@@ -85,19 +81,14 @@ impl fmt::Debug for EncryptedMem {
 /// while it's loaded in memory.
 /// #### Structure
 /// ```rs
-/// pub struct SealingKey<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize>(
-///     [[u8; VAULT_PAGE_SIZE]; VAULT_PAGES],
-/// );
+/// pub struct SealingKey<const SEALING_KEY_SIZE: usize>([u8; SEALING_KEY_SIZE]);
 /// ```
-pub struct SealingKey<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize>(
-    [[u8; VAULT_PAGE_SIZE]; VAULT_PAGES],
-);
+pub struct SealingKey<const SEALING_KEY_SIZE: usize>([u8; SEALING_KEY_SIZE]);
 
 mod key_ops {
     use super::SealingKey;
     use crate::{
-        EncryptedMem, MemSecurityErr, MemSecurityResult, DEFAULT_VAULT_PAGES,
-        DEFAULT_VAULT_PAGE_SIZE,
+        EncryptedMem, MemSecurityErr, MemSecurityResult, DEFAULT_SEALING_KEY_SIZE,
     };
     use ascon_aead::{
         AsconAead128, AsconAead128Key, AsconAead128Tag,
@@ -112,22 +103,12 @@ mod key_ops {
     /// the ciphertext.
     const ASCON128_TAG_LEN: usize = 16;
 
-    static SEALING_KEY: Lazy<SealingKey<DEFAULT_VAULT_PAGES, DEFAULT_VAULT_PAGE_SIZE>> =
+    static SEALING_KEY: Lazy<SealingKey<DEFAULT_SEALING_KEY_SIZE>> =
         Lazy::new(|| SealingKey::new().unwrap());
 
-    impl<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize>
-        SealingKey<VAULT_PAGES, VAULT_PAGE_SIZE>
-    {
+    impl<const SEALING_KEY_SIZE: usize> SealingKey<SEALING_KEY_SIZE> {
         fn new() -> MemSecurityResult<Self> {
-            let mut pages = [[0u8; VAULT_PAGE_SIZE]; VAULT_PAGES];
-
-            (0..VAULT_PAGES).try_for_each(|vault_page_index| {
-                pages[vault_page_index] = *RandomBytes::<VAULT_PAGE_SIZE>::new()?.expose();
-
-                Ok::<_, MemSecurityErr>(())
-            })?;
-
-            let mut outcome = SealingKey(pages);
+            let mut outcome = SealingKey(*RandomBytes::<SEALING_KEY_SIZE>::new()?.expose());
             outcome.lock_pages();
 
             Ok(outcome)
@@ -135,53 +116,32 @@ mod key_ops {
 
         #[allow(unsafe_code)]
         fn lock_pages(&mut self) {
-            self.0.iter_mut().for_each(|page| unsafe {
-                memsec::mlock(page.as_mut_slice().as_mut_ptr(), VAULT_PAGE_SIZE);
-                //TODO Handle this bool
-            });
+            unsafe { memsec::mlock(self.0.as_mut_ptr(), SEALING_KEY_SIZE) }; //TODO Handle this bool
         }
 
         #[allow(unsafe_code)]
         fn munlock_pages(&mut self) {
-            self.0.iter_mut().for_each(|page| unsafe {
-                memsec::munlock(page.as_mut_slice().as_mut_ptr(), VAULT_PAGE_SIZE);
-                //TODO Handle this bool
-            });
+            unsafe { memsec::munlock(self.0.as_mut_ptr(), SEALING_KEY_SIZE) }; //TODO Handle this bool
         }
 
         fn kek(&self) -> [u8; blake3::OUT_LEN] {
-            let mut hasher = blake3::Hasher::new();
-            self.0.iter().for_each(|page| {
-                hasher.update(page);
-            });
-
-            *hasher.finalize().as_bytes()
+            *blake3::hash(&self.0).as_bytes()
         }
     }
 
-    impl<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize> Zeroize
-        for SealingKey<VAULT_PAGES, VAULT_PAGE_SIZE>
-    {
+    impl<const SEALING_KEY_SIZE: usize> Zeroize for SealingKey<SEALING_KEY_SIZE> {
         fn zeroize(&mut self) {
             self.0.zeroize();
         }
     }
 
-    impl<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize> ZeroizeOnDrop
-        for SealingKey<VAULT_PAGES, VAULT_PAGE_SIZE>
-    {
-    }
+    impl<const SEALING_KEY_SIZE: usize> ZeroizeOnDrop for SealingKey<SEALING_KEY_SIZE> {}
 
-    impl<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize> Drop
-        for SealingKey<VAULT_PAGES, VAULT_PAGE_SIZE>
-    {
+    impl<const SEALING_KEY_SIZE: usize> Drop for SealingKey<SEALING_KEY_SIZE> {
         fn drop(&mut self) {
             self.munlock_pages();
 
-            #[cfg(debug_assertions)]
-            self.0
-                .iter()
-                .for_each(|page| debug_assert_eq!(page, &[0u8; VAULT_PAGE_SIZE]))
+            debug_assert_eq!(self.0, [0u8; SEALING_KEY_SIZE]);
         }
     }
 
