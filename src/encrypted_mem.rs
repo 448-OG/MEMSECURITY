@@ -258,6 +258,7 @@ mod key_ops {
         /// The plaintext is only ever written into the returned
         /// [Zeroizing] array. Moving the array out of this function can still
         /// leave a copy in a stack frame that is not wiped.
+        /// [EncryptedMem::with_decrypted_16byte] avoids the move.
         ///
         /// # Errors
         ///
@@ -275,6 +276,7 @@ mod key_ops {
         /// The plaintext is only ever written into the returned
         /// [Zeroizing] array. Moving the array out of this function can still
         /// leave a copy in a stack frame that is not wiped.
+        /// [EncryptedMem::with_decrypted_32byte] avoids the move.
         ///
         /// # Errors
         ///
@@ -287,9 +289,83 @@ mod key_ops {
             self.decrypt_array()
         }
 
+        /// Decrypts a 16 byte secret and lends it to `f`.
+        ///
+        /// The plaintext stays in one buffer that is wiped when `f`
+        /// returns, so unlike [EncryptedMem::decrypt_16byte] it is never
+        /// moved. Whatever `f` returns is the caller's to wipe.
+        ///
+        /// ```rs
+        /// let first_byte = secret.with_decrypted_16byte(|key| key[0])?;
+        /// ```
+        ///
+        /// # Errors
+        ///
+        /// `f` is not called on error.
+        /// - [MemSecurityErr::InvalidArrayLength] if the secret is not 16
+        ///   bytes long. This is checked before authenticating.
+        /// - [MemSecurityErr::EncryptionErr] if nothing has been
+        ///   encrypted, the ciphertext is shorter than its tag, or
+        ///   authentication fails.
+        pub fn with_decrypted_16byte<R>(
+            &self,
+            f: impl FnOnce(&[u8; 16]) -> R,
+        ) -> MemSecurityResult<R> {
+            self.with_decrypted_array(f)
+        }
+
+        /// Decrypts a 32 byte secret and lends it to `f`.
+        ///
+        /// The plaintext stays in one buffer that is wiped when `f`
+        /// returns, so unlike [EncryptedMem::decrypt_32byte] it is never
+        /// moved. Whatever `f` returns is the caller's to wipe.
+        ///
+        /// ```rs
+        /// let signing_key = secret.with_decrypted_32byte(SigningKey::from_bytes)?;
+        /// ```
+        ///
+        /// # Errors
+        ///
+        /// `f` is not called on error.
+        /// - [MemSecurityErr::InvalidArrayLength] if the secret is not 32
+        ///   bytes long. This is checked before authenticating.
+        /// - [MemSecurityErr::EncryptionErr] if nothing has been
+        ///   encrypted, the ciphertext is shorter than its tag, or
+        ///   authentication fails.
+        pub fn with_decrypted_32byte<R>(
+            &self,
+            f: impl FnOnce(&[u8; 32]) -> R,
+        ) -> MemSecurityResult<R> {
+            self.with_decrypted_array(f)
+        }
+
         /// Decrypts into a [Zeroizing] array of `N` bytes. Returning the
         /// array moves it, which can leave an unwiped copy on the stack.
         fn decrypt_array<const N: usize>(&self) -> MemSecurityResult<Zeroizing<[u8; N]>> {
+            let mut plaintext = Zeroizing::new([0u8; N]);
+            self.decrypt_array_into(&mut plaintext)?;
+
+            Ok(plaintext)
+        }
+
+        /// Decrypts into a [Zeroizing] array of `N` bytes that never leaves
+        /// this frame and lends it to `f`.
+        fn with_decrypted_array<const N: usize, R>(
+            &self,
+            f: impl FnOnce(&[u8; N]) -> R,
+        ) -> MemSecurityResult<R> {
+            let mut plaintext = Zeroizing::new([0u8; N]);
+            self.decrypt_array_into(&mut plaintext)?;
+
+            Ok(f(&plaintext))
+        }
+
+        /// Decrypts into `plaintext`, rejecting a secret that is not `N`
+        /// bytes long before authenticating.
+        fn decrypt_array_into<const N: usize>(
+            &self,
+            plaintext: &mut [u8; N],
+        ) -> MemSecurityResult<()> {
             let plaintext_len = self.plaintext_len()?;
             if plaintext_len != N {
                 return Err(MemSecurityErr::InvalidArrayLength {
@@ -298,10 +374,7 @@ mod key_ops {
                 });
             }
 
-            let mut plaintext = Zeroizing::new([0u8; N]);
-            self.decrypt_into(&mut *plaintext)?;
-
-            Ok(plaintext)
+            self.decrypt_into(plaintext)
         }
 
         /// The length of the plaintext, which is the ciphertext without the
@@ -350,11 +423,7 @@ mod key_ops {
         ) -> MemSecurityResult<ed25519_dalek::Signature> {
             use ed25519_dalek::{Signer, SigningKey};
 
-            let encrypted_key = self.decrypt_32byte()?;
-
-            let signing_key = SigningKey::from_bytes(&encrypted_key);
-
-            drop(encrypted_key);
+            let signing_key = self.with_decrypted_32byte(SigningKey::from_bytes)?;
 
             Ok(signing_key.sign(message.as_ref()))
         }
@@ -368,11 +437,9 @@ mod key_ops {
         ) -> MemSecurityResult<x25519_dalek::SharedSecret> {
             use x25519_dalek::StaticSecret;
 
-            let encrypted_key = self.decrypt_32byte()?;
-
-            let x25519_static_key = StaticSecret::from(*encrypted_key);
-
-            drop(encrypted_key);
+            // StaticSecret only takes the key by value, so one copy is
+            // unavoidable. StaticSecret wipes it on drop.
+            let x25519_static_key = self.with_decrypted_32byte(|key| StaticSecret::from(*key))?;
 
             Ok(x25519_static_key.diffie_hellman(&x25519_public_key))
         }
@@ -382,11 +449,9 @@ mod key_ops {
         pub fn x25519_public_key(&self) -> MemSecurityResult<x25519_dalek::PublicKey> {
             use x25519_dalek::{PublicKey, StaticSecret};
 
-            let encrypted_key = self.decrypt_32byte()?;
-
-            let x25519_static_key = StaticSecret::from(*encrypted_key);
-
-            drop(encrypted_key);
+            // StaticSecret only takes the key by value, so one copy is
+            // unavoidable. StaticSecret wipes it on drop.
+            let x25519_static_key = self.with_decrypted_32byte(|key| StaticSecret::from(*key))?;
 
             Ok(PublicKey::from(&x25519_static_key))
         }
@@ -465,6 +530,20 @@ mod tests {
                 assert_eq!(fixed_size.unwrap_err(), MemSecurityErr::EncryptionErr);
             }
         }
+    }
+
+    // The closure never sees bytes that failed authentication.
+    #[test]
+    fn with_decrypted_array_skips_closure_on_failure() {
+        let mut secret = encrypted(vec![5u8; 32]);
+        secret.ciphertext[0] ^= 1;
+
+        assert_eq!(
+            secret
+                .with_decrypted_32byte(|_| panic!("closure called"))
+                .unwrap_err(),
+            MemSecurityErr::EncryptionErr
+        );
     }
 
     // A failed decrypt leaves no unauthenticated bytes in the buffer.
