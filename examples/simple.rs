@@ -19,10 +19,7 @@ fn foo() {
     foo.encrypt(plaintext_bytes.expose()).unwrap();
 
     let decrypted = foo.decrypt().unwrap();
-    assert_eq!(
-        plaintext_bytes.expose(),
-        decrypted.expose_borrowed().as_ref()
-    );
+    assert_eq!(plaintext_bytes.expose().as_slice(), decrypted.as_slice());
 
     {
         assert!(foo
@@ -62,6 +59,6 @@ fn foo() {
         store.encrypt_uuid().unwrap();
 
         let decrypted = store.decrypt_uuid().unwrap();
-        assert_eq!(decrypted.expose_borrowed().len(), 16usize);
+        assert_eq!(decrypted.len(), 16usize);
     }
 }

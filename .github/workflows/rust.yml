@@ -24,8 +24,6 @@ jobs:
       run: cargo clippy --all-targets --all-features -- -D warnings
     - name: Run build with `random` feature enabled
       run: cargo build --no-default-features --features random --verbose
-    - name: Run build with `clonable_mem` feature enabled
-      run: cargo build --no-default-features --features clonable_mem --verbose
     - name: Run build with `encryption` feature enabled
       run: cargo build --no-default-features --features encryption --verbose
     - name: Run build with `symm_asymm` feature enabled
@@ -55,8 +53,6 @@ jobs:
       run: cargo build --all-features
     - name: Run build with `random` feature enabled
       run: cargo build --no-default-features --features random --verbose
-    - name: Run build with `clonable_mem` feature enabled
-      run: cargo build --no-default-features --features clonable_mem --verbose
     - name: Run build with `encryption` feature enabled
       run: cargo build --no-default-features --features encryption --verbose
     - name: Run build with `symm_asymm` feature enabled
@@ -86,8 +82,6 @@ jobs:
       run: cargo build --all-features
     - name: Run build with `random` feature enabled
       run: cargo build --no-default-features --features random --verbose
-    - name: Run build with `clonable_mem` feature enabled
-      run: cargo build --no-default-features --features clonable_mem --verbose
     - name: Run build with `encryption` feature enabled
       run: cargo build --no-default-features --features encryption --verbose
     - name: Run build with `symm_asymm` feature enabled

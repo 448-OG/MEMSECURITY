@@ -4,13 +4,12 @@
 
 use core::fmt;
 
+use zeroize::Zeroizing;
+
 use crate::MemSecurityResult;
 
 #[cfg(all(feature = "symm_asymm", feature = "random"))]
-use {
-    crate::ZeroizeBytes,
-    random_detached::{Generator, RandomBytes},
-};
+use random_detached::{Generator, RandomBytes};
 
 type AsconNonce = ascon_aead::AsconAead128Nonce;
 
@@ -33,12 +32,12 @@ pub type VaultPagesLayout<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize
 /// #### Structure
 /// ```rs
 /// pub struct EncryptedMem {
-///     ciphertext: ZeroizeBytes,
+///     ciphertext: Zeroizing<Vec<u8>>,
 ///     nonce: AsconNonce,
 /// }
 /// ```
 pub struct EncryptedMem {
-    ciphertext: ZeroizeBytes,
+    ciphertext: Zeroizing<Vec<u8>>,
     #[cfg(feature = "encryption")]
     nonce: AsconNonce,
 }
@@ -55,14 +54,14 @@ impl EncryptedMem {
         assert_ne!(*nonce.expose(), [0u8; ASCON128_NONCE_LEN]);
 
         Ok(EncryptedMem {
-            ciphertext: ZeroizeBytes::new(),
+            ciphertext: Zeroizing::new(Vec::new()),
             #[cfg(feature = "encryption")]
             nonce: AsconNonce::try_from(nonce.expose().as_ref())?,
         })
     }
 
     /// Expose the ciphertext
-    pub fn ciphertext(&self) -> &ZeroizeBytes {
+    pub fn ciphertext(&self) -> &Zeroizing<Vec<u8>> {
         &self.ciphertext
     }
 
@@ -76,10 +75,7 @@ impl EncryptedMem {
 impl fmt::Debug for EncryptedMem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EncryptedMem")
-            .field(
-                "ciphertext",
-                &blake3::hash(self.ciphertext.expose_borrowed()),
-            )
+            .field("ciphertext", &blake3::hash(&self.ciphertext))
             .field("nonce", &blake3::hash(self.nonce.as_ref()))
             .finish()
     }
@@ -100,8 +96,8 @@ pub struct SealingKey<const VAULT_PAGES: usize, const VAULT_PAGE_SIZE: usize>(
 mod key_ops {
     use super::SealingKey;
     use crate::{
-        EncryptedMem, MemSecurityErr, MemSecurityResult, ZeroizeArray, ZeroizeBytes,
-        DEFAULT_VAULT_PAGES, DEFAULT_VAULT_PAGE_SIZE,
+        EncryptedMem, MemSecurityErr, MemSecurityResult, DEFAULT_VAULT_PAGES,
+        DEFAULT_VAULT_PAGE_SIZE,
     };
     use ascon_aead::{
         aead::{Aead, KeyInit},
@@ -109,7 +105,7 @@ mod key_ops {
     };
     use once_cell::sync::Lazy;
     use random_detached::{Generator, RandomBytes};
-    use zeroize::{Zeroize, ZeroizeOnDrop};
+    use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
     static SEALING_KEY: Lazy<SealingKey<DEFAULT_VAULT_PAGES, DEFAULT_VAULT_PAGE_SIZE>> =
         Lazy::new(|| SealingKey::new().unwrap());
@@ -215,24 +211,23 @@ mod key_ops {
 
             debug_assert_eq!(kek, [0u8; blake3::OUT_LEN]);
 
-            self.ciphertext = ZeroizeBytes::new_with_data(&outcome?);
+            self.ciphertext = Zeroizing::new(outcome?);
 
             Ok(self)
         }
 
         /// Performs an decryption operation.
-        pub fn decrypt(&self) -> MemSecurityResult<ZeroizeBytes> {
+        pub fn decrypt(&self) -> MemSecurityResult<Zeroizing<Vec<u8>>> {
             let mut kek = SEALING_KEY.kek();
             let kek_ptr = kek.as_mut_ptr();
             SEALING_KEY.mlock_kek(kek_ptr); //TODO Handle this bool
 
             let cipher = AsconAead128::new(&AsconAead128Key::try_from(kek[0..16].as_ref())?);
 
-            let outcome =
-                match cipher.decrypt(&self.nonce, self.ciphertext.expose_borrowed().as_ref()) {
-                    Ok(plaintext) => Ok(ZeroizeBytes::new_with_data(&plaintext)),
-                    Err(_) => Err(MemSecurityErr::EncryptionErr),
-                };
+            let outcome = match cipher.decrypt(&self.nonce, self.ciphertext.as_slice()) {
+                Ok(plaintext) => Ok(Zeroizing::new(plaintext)),
+                Err(_) => Err(MemSecurityErr::EncryptionErr),
+            };
 
             SEALING_KEY.munlock_kek(kek_ptr); //TODO Handle this bool
 
@@ -295,28 +290,31 @@ mod key_ops {
         }
 
         /// Performs an decryption operation expecting a 16 byte array that is zeroed when dropped.
-        pub fn decrypt_16byte(&self) -> MemSecurityResult<ZeroizeArray<16>> {
+        pub fn decrypt_16byte(&self) -> MemSecurityResult<Zeroizing<[u8; 16]>> {
             let mut kek = SEALING_KEY.kek();
             let kek_ptr = kek.as_mut_ptr();
             SEALING_KEY.mlock_kek(kek_ptr); //TODO Handle this bool
 
             let cipher = AsconAead128::new(&AsconAead128Key::try_from(kek[0..16].as_ref())?);
 
-            let outcome =
-                match cipher.decrypt(&self.nonce, self.ciphertext.expose_borrowed().as_ref()) {
-                    Ok(plaintext) => {
-                        let plaintext_len = plaintext.len();
-                        if plaintext_len != crate::SECRET_KEY_16BYTE {
-                            return Err(MemSecurityErr::InvalidArrayLength {
-                                expected: crate::SECRET_KEY_16BYTE,
-                                found: plaintext_len,
-                            });
-                        } else {
-                            ZeroizeArray::<{ crate::SECRET_KEY_16BYTE }>::new_from_slice(&plaintext)
-                        }
+            let outcome = match cipher.decrypt(&self.nonce, self.ciphertext.as_slice()) {
+                Ok(plaintext) => {
+                    let plaintext = Zeroizing::new(plaintext);
+                    let plaintext_len = plaintext.len();
+                    if plaintext_len != crate::SECRET_KEY_16BYTE {
+                        return Err(MemSecurityErr::InvalidArrayLength {
+                            expected: crate::SECRET_KEY_16BYTE,
+                            found: plaintext_len,
+                        });
+                    } else {
+                        let mut array = Zeroizing::new([0u8; crate::SECRET_KEY_16BYTE]);
+                        array.copy_from_slice(&plaintext);
+
+                        Ok(array)
                     }
-                    Err(_) => Err(MemSecurityErr::EncryptionErr),
-                };
+                }
+                Err(_) => Err(MemSecurityErr::EncryptionErr),
+            };
 
             SEALING_KEY.munlock_kek(kek_ptr); //TODO Handle this bool
 
@@ -326,28 +324,31 @@ mod key_ops {
         }
 
         /// Performs an decryption operation expecting a 32 byte array that is zeroed when dropped.
-        pub fn decrypt_32byte(&self) -> MemSecurityResult<ZeroizeArray<32>> {
+        pub fn decrypt_32byte(&self) -> MemSecurityResult<Zeroizing<[u8; 32]>> {
             let mut kek = SEALING_KEY.kek();
             let kek_ptr = kek.as_mut_ptr();
             SEALING_KEY.mlock_kek(kek_ptr); //TODO Handle this bool
 
             let cipher = AsconAead128::new(&AsconAead128Key::try_from(kek[0..16].as_ref())?);
 
-            let outcome =
-                match cipher.decrypt(&self.nonce, self.ciphertext.expose_borrowed().as_ref()) {
-                    Ok(plaintext) => {
-                        let plaintext_len = plaintext.len();
-                        if plaintext_len != crate::SECRET_KEY_32BYTE {
-                            return Err(MemSecurityErr::InvalidArrayLength {
-                                expected: crate::SECRET_KEY_32BYTE,
-                                found: plaintext_len,
-                            });
-                        } else {
-                            ZeroizeArray::<{ crate::SECRET_KEY_32BYTE }>::new_from_slice(&plaintext)
-                        }
+            let outcome = match cipher.decrypt(&self.nonce, self.ciphertext.as_slice()) {
+                Ok(plaintext) => {
+                    let plaintext = Zeroizing::new(plaintext);
+                    let plaintext_len = plaintext.len();
+                    if plaintext_len != crate::SECRET_KEY_32BYTE {
+                        return Err(MemSecurityErr::InvalidArrayLength {
+                            expected: crate::SECRET_KEY_32BYTE,
+                            found: plaintext_len,
+                        });
+                    } else {
+                        let mut array = Zeroizing::new([0u8; crate::SECRET_KEY_32BYTE]);
+                        array.copy_from_slice(&plaintext);
+
+                        Ok(array)
                     }
-                    Err(_) => Err(MemSecurityErr::EncryptionErr),
-                };
+                }
+                Err(_) => Err(MemSecurityErr::EncryptionErr),
+            };
 
             SEALING_KEY.munlock_kek(kek_ptr); //TODO Handle this bool
 
@@ -366,7 +367,7 @@ mod key_ops {
 
             let encrypted_key = self.decrypt_32byte()?;
 
-            let signing_key = SigningKey::from_bytes(encrypted_key.expose_borrowed());
+            let signing_key = SigningKey::from_bytes(&encrypted_key);
 
             drop(encrypted_key);
 
@@ -384,7 +385,7 @@ mod key_ops {
 
             let encrypted_key = self.decrypt_32byte()?;
 
-            let x25519_static_key = StaticSecret::from(*encrypted_key.expose_borrowed());
+            let x25519_static_key = StaticSecret::from(*encrypted_key);
 
             drop(encrypted_key);
 
@@ -398,7 +399,7 @@ mod key_ops {
 
             let encrypted_key = self.decrypt_32byte()?;
 
-            let x25519_static_key = StaticSecret::from(*encrypted_key.expose_borrowed());
+            let x25519_static_key = StaticSecret::from(*encrypted_key);
 
             drop(encrypted_key);
 
@@ -410,15 +411,14 @@ mod key_ops {
         pub fn encrypt_uuid(&mut self) -> MemSecurityResult<&mut Self> {
             use uuid::Uuid;
 
-            let uuid_bytes = ZeroizeBytes::new_with_data(Uuid::new_v4().as_bytes());
-            self.encrypt(&uuid_bytes)?;
+            self.encrypt(Uuid::new_v4().as_bytes())?;
 
             Ok(self)
         }
 
         /// Decrypt a version 4 UUID
         #[cfg(feature = "uuid")]
-        pub fn decrypt_uuid(&mut self) -> MemSecurityResult<ZeroizeArray<16>> {
+        pub fn decrypt_uuid(&mut self) -> MemSecurityResult<Zeroizing<[u8; 16]>> {
             self.decrypt_16byte()
         }
     }

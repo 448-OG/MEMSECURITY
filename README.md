@@ -13,8 +13,7 @@ However, this implementation derives a sealing key from a large area of memory c
 This crate has not received an audit. Use at your own risk!!!
 
 #### Features
-- **`symm_asymm`** - feature enables data types that can be used to securely zero out memory when they are dropped. They implement `Zeroize` trait from `zeroize` crate.
-- **`clonable_mem`** - Allows the cloning of data types enabled by the `symm_asymm`  features.
+- **`symm_asymm`** - feature enables type aliases for common key sizes (e.g. `Key32Byte`) built on `zeroize::Zeroizing`, which zeroes the secret when it is dropped.
 - **`encryption`** - This enables encrypted memory with `mlock` and `munlock` and encrypts using Ascon128a cipher.
 - **`random`** - This enables cryptographically secure random number generator which use `rand_core` and `rand_chacha`.
 
@@ -32,24 +31,16 @@ This crate has not received an audit. Use at your own risk!!!
     assert_ne!(random_bytes.expose(), &[0u8; 32]);
     ```
 2. ###### Using the data types that are zeroed when dropped
-    Sometimes sensitive data needs to be zeroed when it is dropped. This can be to protect secrets like encryption keys or passwords by ensuring they are not kept in memory when they are no longer needed. The `symm_asymm` feature must be enabled. The `clonable_mem` feature can be enabled if they you need to clone these secrets (Use these with care). Most of these have the `.expose_borrowed()` method which exposes the inner value if you want to use that value.
+    Sometimes sensitive data needs to be zeroed when it is dropped. This can be to protect secrets like encryption keys or passwords by ensuring they are not kept in memory when they are no longer needed. The `symm_asymm` feature must be enabled. The types are `zeroize::Zeroizing` wrappers. Moving one copies its bytes and leaves the old location unwiped, so avoid passing secret arrays by value where you can.
     ```rust
-    use memsecurity::{ZeroizeArray, ZeroizeBytes};
+    use memsecurity::Key32Byte;
 
-    // Create an array of 4 bytes that will be zeroed out when dropped.
-    let array_like = ZeroizeArray::<4>::new([4u8, 3,2,1]);
+    // Create an array of 32 bytes that will be zeroed out when dropped.
+    let mut key = Key32Byte::new([0u8; 32]);
 
-    // Use the value
-    array_like.expose_owned();
-
-    // Create a Vec like array using `BytesMut` from `bytes` crate that re-allocates when it's capacity is exceeded.
-    let mut vector_like = ZeroizeBytes::new();
-
-    // Insert a slice of bytes
-    vector_like.set(&[4u8, 5,6,7]); // Must be a byte (u8) type
-
-    // Use the value
-    vector_like.expose_borrowed();
+    // Write the secret in place and use the value
+    key[0] = 4;
+    assert_eq!(key.len(), 32);
     ```
 3. ###### Encrypt a secret while in memory using Ascon128a encryption
     Whenever you want to encrypt secrets like passwords or encryption keys in memory, enable the `encryption` feature to use the `EncryptedMem` type. `mlock` and `munlock` are also implemented in this data. The encryption key is generated afresh on each app run.
@@ -74,10 +65,7 @@ This crate has not received an audit. Use at your own risk!!!
     // Decrypt the secret using the `mlocked` key
     let decrypted = foo.decrypt().unwrap();
 
-    assert_eq!(
-        plaintext_bytes.expose(),
-        decrypted.expose_borrowed().as_ref()
-    );
+    assert_eq!(plaintext_bytes.expose().as_slice(), decrypted.as_slice());
     ```
 
 #### LICENSE
