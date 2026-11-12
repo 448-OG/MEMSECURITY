@@ -74,7 +74,7 @@ impl Eq for ZeroizeByte {}
 
 impl Zeroize for ZeroizeByte {
     fn zeroize(&mut self) {
-        self.0 = 0;
+        self.0.zeroize();
     }
 }
 
@@ -146,6 +146,12 @@ mod bytes_array {
 impl<const N: usize> AsRef<[u8]> for ZeroizeArray<N> {
     fn as_ref(&self) -> &[u8] {
         self.expose_borrowed()
+    }
+}
+
+impl<const N: usize> AsMut<[u8]> for ZeroizeArray<N> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.expose_mut()
     }
 }
 
@@ -255,6 +261,15 @@ impl<const N: usize> ZeroizeArray<N> {
         &self.0
     }
 
+    /// Expose the internal as a mutable array.
+    ///
+    /// Write a secret straight into the container with this method. Use it
+    /// together with [`ZeroizeArray::new_zeroed`] so that no other copy of
+    /// the secret is made on the way in.
+    pub fn expose_mut(&mut self) -> &mut [u8; N] {
+        &mut self.0
+    }
+
     /// Clone the array
     #[cfg(feature = "clonable_mem")]
     pub fn clone_inner(&self) -> ZeroizeArray<N> {
@@ -276,7 +291,7 @@ impl<const N: usize> ZeroizeArray<N> {
 
 impl<const N: usize> Zeroize for ZeroizeArray<N> {
     fn zeroize(&mut self) {
-        self.0[..].copy_from_slice(&[0u8; N]);
+        self.0.zeroize();
     }
 }
 
@@ -465,9 +480,26 @@ impl ZeroizeBytes {
         ZeroizeBytes(BytesMut::with_capacity(capacity))
     }
 
+    /// Create an array of exactly `len` zero bytes.
+    ///
+    /// Fill it through [`ZeroizeBytes::expose_mut`]. The capacity equals
+    /// `len`, so filling it never reallocates and never leaves a copy behind.
+    pub fn new_zeroed(len: usize) -> Self {
+        ZeroizeBytes(BytesMut::zeroed(len))
+    }
+
     /// Expose the internal value
     pub fn expose_borrowed(&self) -> &BytesMut {
         &self.0
+    }
+
+    /// Expose the internal value as a mutable slice.
+    ///
+    /// This returns a slice and not the `BytesMut`, so the length cannot
+    /// change and the buffer cannot be reallocated, which would leave the old
+    /// buffer behind unwiped.
+    pub fn expose_mut(&mut self) -> &mut [u8] {
+        &mut self.0[..]
     }
 
     /// Clone the array
@@ -723,7 +755,7 @@ impl<const N: usize> Eq for ZeroizeArrayVecBytes<N> {}
 
 impl<const N: usize> Zeroize for ZeroizeArrayVecBytes<N> {
     fn zeroize(&mut self) {
-        self.0.clear()
+        self.0.zeroize();
     }
 }
 
@@ -742,5 +774,46 @@ impl<const N: usize> fmt::Debug for ZeroizeArrayVecBytes<N> {
             "ZeroizeArrayVecBytes<const N: usize>({:?})",
             blake3::hash(&self.0)
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A secret written through `expose_mut` can be read back unchanged.
+    #[test]
+    fn zeroize_array_expose_mut_roundtrip() {
+        let mut array = ZeroizeArray::<4>::new_zeroed();
+        array.expose_mut().copy_from_slice(&[1, 2, 3, 4]);
+
+        assert_eq!(array.expose_borrowed(), &[1, 2, 3, 4]);
+    }
+
+    // `AsMut<[u8]>` writes to the same storage that `AsRef<[u8]>` reads.
+    #[test]
+    fn zeroize_array_as_mut_roundtrip() {
+        let mut array = ZeroizeArray::<3>::new_zeroed();
+        array.as_mut()[1] = 9;
+
+        assert_eq!(array.as_ref(), &[0, 9, 0]);
+    }
+
+    // `new_zeroed` has exactly the requested length and is all zeros.
+    #[test]
+    fn zeroize_bytes_new_zeroed_is_zeroed() {
+        let bytes = ZeroizeBytes::new_zeroed(5);
+
+        assert_eq!(bytes.expose_borrowed().len(), 5);
+        assert!(bytes.expose_borrowed().iter().all(|byte| *byte == 0));
+    }
+
+    // A secret written through `expose_mut` can be read back unchanged.
+    #[test]
+    fn zeroize_bytes_expose_mut_roundtrip() {
+        let mut bytes = ZeroizeBytes::new_zeroed(3);
+        bytes.expose_mut().copy_from_slice(&[7, 8, 9]);
+
+        assert_eq!(bytes.as_ref(), &[7, 8, 9]);
     }
 }
