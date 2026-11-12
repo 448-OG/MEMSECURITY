@@ -1,6 +1,6 @@
 # MEMSECURITY
 
-[![Rust](https://github.com/448-engineering/MEMSECURITY/actions/workflows/rust.yml/badge.svg?branch=master)](https://github.com/448-engineering/MEMSECURITY/actions/workflows/rust.yml)  ![crates.io](https://img.shields.io/crates/v/memsecurity.svg)[![Docs](https://docs.rs/memsecurity/badge.svg)](https://docs.rs/memsecurity)
+[![Rust](https://github.com/448-OG/MEMSECURITY/actions/workflows/rust.yml/badge.svg)](https://github.com/448-OG/MEMSECURITY/actions/workflows/rust.yml)  ![crates.io](https://img.shields.io/crates/v/memsecurity.svg)[![Docs](https://docs.rs/memsecurity/badge.svg)](https://docs.rs/memsecurity)
 
 
 Securely hold secrets in memory and protect them against cross-protection-boundary readout via microarchitectural, via attacks on physical layout, and via coldboot attacks. `mlock` is also used to prevent the operating system from swapping these secrets to RAM which offers some level of protection aganist cold boot attacks.
