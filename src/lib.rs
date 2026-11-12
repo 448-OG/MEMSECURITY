@@ -16,26 +16,17 @@ mod encrypted_mem;
 pub use encrypted_mem::*;
 
 #[cfg(feature = "symm_asymm")]
-mod zeroizable_arrays;
-#[cfg(feature = "symm_asymm")]
-pub use zeroizable_arrays::*;
-
-#[cfg(feature = "symm_asymm")]
 mod traits;
 #[cfg(feature = "symm_asymm")]
 pub use traits::*;
 
 /// Re-export  crates
 #[cfg(feature = "encryption")]
-pub use arrayvec;
-#[cfg(feature = "encryption")]
 pub use ascon_aead;
 #[cfg(feature = "bitcode")]
 pub use bitcode;
 #[cfg(feature = "encryption")]
 pub use blake3;
-#[cfg(feature = "encryption")]
-pub use bytes;
 #[cfg(feature = "ed25519")]
 pub use ed25519_dalek;
 #[cfg(feature = "encryption")]

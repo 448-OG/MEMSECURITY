@@ -12,18 +12,9 @@ homepage = "https://github.com/448-OG/MEMSECURITY"
 repository = "https://github.com/448-OG/MEMSECURITY"
 
 [dependencies]
-arrayvec = {
-  version = "0.7.8",
-  default-features = true,
-  features = [
-    "zeroize",
-  ],
-  optional = true
-}
 ascon-aead = { version = "0.6.0", features = ["zeroize"], optional = true }
 bitcode = { version = "0.6.9", default-features = false, features = ["derive", "std", "uuid"], optional = true }
 blake3 = { version = "1.8.7", default-features = true, optional = true }
-bytes = { version = "1.12.1", optional = true }
 ed25519-dalek = {
   version = "2.2.0",
   features = [
@@ -63,7 +54,6 @@ maintenance = { status = "passively-maintained" }
 [features]
 default = ["encryption", "random", "symm_asymm"]
 bitcode = ["dep:bitcode"]
-clonable_mem = ["dep:random-detached"]
 ed25519 = ["dep:ed25519-dalek"]
 encryption = [
   "dep:ascon-aead",
@@ -74,7 +64,6 @@ encryption = [
   "symm_asymm",
 ]
 full = [
-  "clonable_mem",
   "ed25519",
   "encryption",
   "random",
@@ -83,8 +72,8 @@ full = [
   "x25519",
 ]
 random = ["dep:random-detached"]
-serde_derive = ["bytes/serde", "serde/derive"]
-symm_asymm = ["dep:arrayvec", "dep:blake3", "dep:bytes"]
+serde_derive = ["serde/derive"]
+symm_asymm = ["dep:blake3"]
 uuid = ["dep:uuid"]
 x25519 = ["dep:x25519-dalek"]
 
