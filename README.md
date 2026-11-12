@@ -74,10 +74,7 @@ This crate has not received an audit. Use at your own risk!!!
     // Decrypt the secret using the `mlocked` key
     let decrypted = foo.decrypt().unwrap();
 
-    assert_eq!(
-        plaintext_bytes.expose(),
-        decrypted.expose_borrowed().as_ref()
-    );
+    assert_eq!(plaintext_bytes.expose().as_slice(), decrypted.as_slice());
     ```
 
 #### LICENSE
