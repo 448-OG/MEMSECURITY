@@ -15,35 +15,13 @@ repository = "https://github.com/448-OG/MEMSECURITY"
 ascon-aead = { version = "0.6.0", features = ["zeroize"], optional = true }
 bitcode = { version = "0.6.9", default-features = false, features = ["derive", "std", "uuid"], optional = true }
 blake3 = { version = "1.8.7", default-features = true, optional = true }
-ed25519-dalek = {
-  version = "2.2.0",
-  features = [
-    "signature",
-    "zeroize",
-  ],
-  optional = true
-}
+ed25519-dalek = { version = "2.2.0", features = ["signature", "zeroize"], optional = true }
 memsec = { version = "0.7.0", optional = true }
 once_cell = { version = "1.21.4", optional = true }
 random-detached = { version = "1.3.0", optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
-uuid = {
-  version = "1.28.0",
-  default-features = false,
-  features = [
-    "rng",
-    "v4",
-  ],
-  optional = true
-}
-x25519-dalek = {
-  version = "2.0.1",
-  features = [
-    "static_secrets",
-    "zeroize",
-  ],
-  optional = true
-}
+uuid = { version = "1.28.0", default-features = false, features = ["rng", "v4"], optional = true }
+x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"], optional = true }
 zeroize = { version = "1.9.1", default-features = false, features = ["alloc", "derive"] }
 
 [badges]
@@ -55,22 +33,8 @@ maintenance = { status = "passively-maintained" }
 default = ["encryption", "random", "symm_asymm"]
 bitcode = ["dep:bitcode"]
 ed25519 = ["dep:ed25519-dalek"]
-encryption = [
-  "dep:ascon-aead",
-  "dep:blake3",
-  "dep:memsec",
-  "dep:once_cell",
-  "random",
-  "symm_asymm",
-]
-full = [
-  "ed25519",
-  "encryption",
-  "random",
-  "symm_asymm",
-  "uuid",
-  "x25519",
-]
+encryption = ["dep:ascon-aead", "dep:blake3", "dep:memsec", "dep:once_cell", "random", "symm_asymm"]
+full = ["ed25519", "encryption", "random", "symm_asymm", "uuid", "x25519"]
 random = ["dep:random-detached"]
 serde_derive = ["serde/derive"]
 symm_asymm = ["dep:blake3"]
