@@ -99,7 +99,7 @@ mod key_ops {
         AsconAead128, AsconAead128Key, AsconAead128Tag,
         aead::{Aead, AeadInOut, KeyInit, inout::InOutBuf},
     };
-    use core::ops::Deref;
+    use core::ops::{Deref, DerefMut};
     use once_cell::sync::Lazy;
     use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -144,8 +144,15 @@ mod key_ops {
             unsafe { self.0.as_mut() }
         }
 
-        fn kek(&self) -> [u8; blake3::OUT_LEN] {
-            *blake3::hash(self.as_slice()).as_bytes()
+        fn kek_into(&self, out: &mut [u8; blake3::OUT_LEN]) {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(self.as_slice());
+
+            let mut reader = hasher.finalize_xof();
+            reader.fill(out);
+
+            hasher.zeroize();
+            reader.zeroize();
         }
     }
 
@@ -185,17 +192,13 @@ mod key_ops {
             &mut self,
             plaintext: &T,
         ) -> MemSecurityResult<&mut Self> {
-            let mut kek = SEALING_KEY.kek();
-            let kek = LockedKek::new(&mut kek);
+            let ciphertext = with_kek(|kek| {
+                cipher(kek)?
+                    .encrypt(&self.nonce, plaintext.as_ref())
+                    .map_err(|_| MemSecurityErr::EncryptionErr)
+            })?;
 
-            let cipher = AsconAead128::new(&AsconAead128Key::try_from(kek[0..16].as_ref())?);
-
-            let outcome = match cipher.encrypt(&self.nonce, plaintext.as_ref()) {
-                Ok(ciphertext) => Ok(ciphertext),
-                Err(_) => Err(MemSecurityErr::EncryptionErr),
-            };
-
-            self.ciphertext = Zeroizing::new(outcome?);
+            self.ciphertext = Zeroizing::new(ciphertext);
 
             Ok(self)
         }
@@ -218,33 +221,49 @@ mod key_ops {
 
         /// Hash some bytes with Blake3 using a key to create a HMAC
         pub fn blake3_hmac<T: Zeroize + AsRef<[u8]>>(plaintext: T) -> blake3::Hash {
-            let mut kek = SEALING_KEY.kek();
-            let kek = LockedKek::new(&mut kek);
+            with_kek(|kek| {
+                let mut hasher = blake3::Hasher::new_keyed(kek);
+                hasher.update(plaintext.as_ref());
 
-            blake3::keyed_hash(&kek, plaintext.as_ref())
+                let outcome = hasher.finalize();
+                hasher.zeroize();
+
+                outcome
+            })
         }
 
         /// Hash some an array of bytes with Blake3 using a key to create a HMAC
         pub fn blake3_keyed_hash_with_array<T: Zeroize + AsRef<[u8]>>(
             plaintext_array: &[T],
         ) -> blake3::Hash {
-            let mut kek = SEALING_KEY.kek();
-            let kek = LockedKek::new(&mut kek);
+            with_kek(|kek| {
+                let mut hasher = blake3::Hasher::new_keyed(kek);
+                plaintext_array.iter().for_each(|plaintext| {
+                    hasher.update(plaintext.as_ref());
+                });
 
-            let mut hasher = blake3::Hasher::new_keyed(&kek);
-            plaintext_array.iter().for_each(|plaintext| {
-                hasher.update(plaintext.as_ref());
-            });
+                let outcome = hasher.finalize();
+                hasher.zeroize();
 
-            hasher.finalize()
+                outcome
+            })
         }
 
         /// Hash a predetermined content with Blake3 using a secret key to derive a key (HKDF)
         pub fn blake3_hkdf(plaintext: &str) -> [u8; blake3::OUT_LEN] {
-            let mut kek = SEALING_KEY.kek();
-            let kek = LockedKek::new(&mut kek);
+            with_kek(|kek| {
+                let mut hasher = blake3::Hasher::new_derive_key(plaintext);
+                hasher.update(kek);
 
-            blake3::derive_key(plaintext, &*kek)
+                let mut outcome = [0u8; blake3::OUT_LEN];
+                let mut reader = hasher.finalize_xof();
+                reader.fill(&mut outcome);
+
+                hasher.zeroize();
+                reader.zeroize();
+
+                outcome
+            })
         }
 
         /// Performs a decryption operation expecting a 16 byte array that is zeroed when dropped.
@@ -394,14 +413,11 @@ mod key_ops {
             let buffer =
                 InOutBuf::new(body, plaintext).map_err(|_| MemSecurityErr::EncryptionErr)?;
 
-            let mut kek = SEALING_KEY.kek();
-            let kek = LockedKek::new(&mut kek);
-
-            let cipher = AsconAead128::new(&AsconAead128Key::try_from(kek[0..16].as_ref())?);
-
-            let outcome = cipher
-                .decrypt_inout_detached(&self.nonce, &[], buffer, &AsconAead128Tag::from(*tag))
-                .map_err(|_| MemSecurityErr::EncryptionErr);
+            let outcome = with_kek(|kek| {
+                cipher(kek)?
+                    .decrypt_inout_detached(&self.nonce, &[], buffer, &AsconAead128Tag::from(*tag))
+                    .map_err(|_| MemSecurityErr::EncryptionErr)
+            });
             if outcome.is_err() {
                 plaintext.zeroize();
             }
@@ -467,6 +483,28 @@ mod key_ops {
         }
     }
 
+    /// Runs `f` with the KEK derived from the sealing key.
+    /// The KEK is locked in memory while `f` runs and wiped afterwards.
+    fn with_kek<R>(f: impl FnOnce(&[u8; blake3::OUT_LEN]) -> R) -> R {
+        // The key is derived into memory that is already locked, so it is
+        // never in memory that can be swapped out.
+        let mut kek = [0u8; blake3::OUT_LEN];
+        let mut kek = LockedKek::new(&mut kek);
+        SEALING_KEY.kek_into(&mut kek);
+
+        f(&kek)
+    }
+
+    /// Builds the cipher from the KEK. The cipher wipes its own copy of the key on drop, so only
+    /// the temporary key is wiped here.
+    fn cipher(kek: &[u8; blake3::OUT_LEN]) -> MemSecurityResult<AsconAead128> {
+        let mut key = AsconAead128Key::try_from(&kek[..16])?;
+        let cipher = AsconAead128::new(&key);
+        key.zeroize();
+
+        Ok(cipher)
+    }
+
     /// The KEK, locked in memory while it is borrowed. Unlocking it on
     /// drop also wipes it, so every return path leaves it zeroed.
     struct LockedKek<'a>(&'a mut [u8; blake3::OUT_LEN]);
@@ -488,6 +526,12 @@ mod key_ops {
         }
     }
 
+    impl DerefMut for LockedKek<'_> {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            self.0
+        }
+    }
+
     impl Drop for LockedKek<'_> {
         #[allow(unsafe_code)]
         fn drop(&mut self) {
@@ -498,6 +542,79 @@ mod key_ops {
                 self.0.iter().all(|&byte| byte == 0),
                 "KEK was not wiped"
             );
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        // The sealing key is filled with random data.
+        #[test]
+        fn sealing_key_is_random() {
+            let key = unlocked_key();
+
+            assert!(key.as_slice().iter().any(|byte| *byte != 0));
+        }
+
+        // The key encryption key depends on every byte of the sealing key.
+        #[test]
+        fn kek_covers_the_whole_sealing_key() {
+            let mut key = unlocked_key();
+            let before = kek(&key);
+            assert_eq!(before, kek(&key));
+
+            key.as_mut_slice()[TEST_KEY_SIZE - 1] ^= 1;
+            assert_ne!(before, kek(&key));
+        }
+
+        // Zeroizing the key wipes every byte.
+        #[test]
+        fn sealing_key_zeroize_wipes_all_bytes() {
+            let mut key = unlocked_key();
+            key.zeroize();
+
+            assert!(key.as_slice().iter().all(|byte| *byte == 0));
+        }
+
+        // The key encryption key is the Blake3 hash of the whole sealing key.
+        #[test]
+        fn kek_is_the_hash_of_the_sealing_key() {
+            let key = unlocked_key();
+
+            assert_eq!(kek(&key), *blake3::hash(key.as_slice()).as_bytes());
+        }
+
+        // The keyed helpers give the results of the one-shot Blake3 functions.
+        #[test]
+        fn keyed_helpers_match_one_shot_blake3() {
+            let mut kek = [0u8; blake3::OUT_LEN];
+            SEALING_KEY.kek_into(&mut kek);
+
+            assert_eq!(
+                EncryptedMem::blake3_hmac(*b"message"),
+                blake3::keyed_hash(&kek, b"message")
+            );
+            assert_eq!(
+                EncryptedMem::blake3_keyed_hash_with_array(&[*b"mess", *b"age!"]),
+                blake3::keyed_hash(&kek, b"message!")
+            );
+            assert_eq!(
+                EncryptedMem::blake3_hkdf("context"),
+                blake3::derive_key("context", &kek)
+            );
+        }
+
+        const TEST_KEY_SIZE: usize = MIN_SEALING_KEY_SIZE;
+
+        fn unlocked_key() -> SealingKey<TEST_KEY_SIZE> {
+            SealingKey::new().unwrap()
+        }
+
+        fn kek(key: &SealingKey<TEST_KEY_SIZE>) -> [u8; blake3::OUT_LEN] {
+            let mut out = [0u8; blake3::OUT_LEN];
+            key.kek_into(&mut out);
+
+            out
         }
     }
 }
